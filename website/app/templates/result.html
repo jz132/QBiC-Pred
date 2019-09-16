@@ -1,7 +1,7 @@
 <!-- about.html-->
 
 {% extends "base.html" %}
-{% block title %}Prediction Result{% endblock %}
+{% block title %}QBiC-Pred: Prediction Result{% endblock %}
 {% block body %}
 
 <link rel= "stylesheet" type= "text/css" href= "{{ url_for('static', filename='css/result.css') }}">
@@ -18,9 +18,9 @@
   <div class = "col-md-3">
     <div class="left-content" style="top: 56px;" id="inputpanel">
       <div class="dropdown">
-        <button class="btn btn-secondary dropdown-toggle" type="button" data-toggle="dropdown">Selected TFs
+        <button class="btn btn-secondary dropdown-toggle" type="button" data-toggle="dropdown">TFs used
         <span class="caret"></span></button>
-        <ul class="dropdown-menu" id="genes-dropdown">
+        <ul class="dropdown-menu scrollable-menu" id="genes-dropdown">
         </ul>
       </div>
     </div>
@@ -49,7 +49,7 @@
       </table>
     </div>
 
-    <div id="csv-download" style="display: none;"></div>
+    <div id="tbl-download" style="display: none;"></div>
   </div>
 
 </div>

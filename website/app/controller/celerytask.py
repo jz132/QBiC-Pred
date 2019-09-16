@@ -14,6 +14,8 @@ import os
 sys.path.insert(0, 'app')
 import controller.utils as utils
 
+from timeit import default_timer as timer
+
 # input: table
 @celery.task(bind=True)
 def inittbl(self,filename,cpath):
@@ -22,43 +24,63 @@ def inittbl(self,filename,cpath):
     kmer = 6
     start = time.time()
     file_extension = os.path.splitext(filename)[1]
-    if file_extension == ".vcf":
-        df = pd.read_csv(filename,sep="\t",header=None).drop(2,1)
-        df = df.rename(columns={0:"chromosome",1:"pos",3:"mutated_from",4:"mutated_to"})
-        df['chromosome'] = df['chromosome'].map(lambda x:x.replace("chr",""))
-    else:
-        if file_extension == ".tsv":
-            separator = "\t"
-        else: # must be csv since we checked it
-            separator = ","
-        df = pd.read_csv(filename,
-                    sep=separator,
-                    usecols=['chromosome','chromosome_start','mutation_type','mutated_from_allele','mutated_to_allele'])
-        df = df[df['mutation_type'].apply(lambda x: "single base substitution" == x)].drop('mutation_type',1).drop_duplicates() # only take single base mutation
-        df = df.rename(columns={"chromosome_start":"pos","mutated_from_allele":"mutated_from","mutated_to_allele":"mutated_to"})
-    grouped = df.groupby('chromosome',sort=True)
-    dataset = {key:item for key,item in grouped}
 
-    result = list()
+    result = []
     error = ""
-    for cidx in [str(a) for a in range(1,23)] + ['X','Y']:
-        self.update_state(state='PROGRESS',
-                  meta={'current': 0, 'total': 1, 'status': 'Preprocessing input for chromosome {}...'.format(cidx)})
-        if cidx not in dataset:
-            continue
-        print("Iterating dataset for chromosome {}...".format(cidx))
-        chromosome = utils.get_chrom(cpath + "/chr." + str(cidx) + '.fa.gz')
-        for idx,row in dataset[cidx].iterrows():
-            pos = row['pos'] - 1
-            if row['mutated_from'] != chromosome[pos]:
-                error = "Found mismatch in the mutation: \n{}".format(row)
+
+    # TODO: if fast enough, we can also put error checking in here
+    if file_extension == ".txt":
+        with open(filename) as f:
+            idx = 0
+            for line in f:
+                if "\t" in line:
+                    line = line.split("\t")
+                else:
+                    line = line.split()
+                idx += 1
+                # line[1] is the base mid nucleotide mutated to
+                escore_seq = line[0] + line[1]
+                mid_seq = escore_seq[len(escore_seq)//2-6:len(escore_seq)//2+5] + line[1] # the 12mer seq
+                result.append([idx,mid_seq,escore_seq,utils.seqtoi(mid_seq),0,0,"None"])
+    else:
+        if file_extension == ".vcf":
+            df = pd.read_csv(filename,sep="\t",header=None).drop(2,1)
+            df = df.rename(columns={0:"chromosome",1:"pos",3:"mutated_from",4:"mutated_to"})
+            df['chromosome'] = df['chromosome'].map(lambda x:x.replace("chr",""))
+        else:
+            if file_extension == ".tsv":
+                separator = "\t"
+            else: # must be csv since we checked it, TODO: can also return error here
+                separator = ","
+            df = pd.read_csv(filename,
+                        sep=separator,
+                        usecols=['chromosome','chromosome_start','mutation_type','mutated_from_allele','mutated_to_allele'])
+            df = df[df['mutation_type'].apply(lambda x: "single base substitution" == x)].drop('mutation_type',1).drop_duplicates() # only take single base mutation
+            df = df.rename(columns={"chromosome_start":"pos","mutated_from_allele":"mutated_from","mutated_to_allele":"mutated_to"})
+
+        grouped = df.groupby('chromosome',sort=True)
+        dataset = {key:item for key,item in grouped}
+
+        for cidx in [str(a) for a in range(1,23)] + ['X','Y']:
+            self.update_state(state='PROGRESS',
+                      meta={'current': 0, 'total': 1, 'status': 'Preprocessing input for chromosome {}...'.format(cidx)})
+            if cidx not in dataset:
+                continue
+            print("Iterating dataset for chromosome {}...".format(cidx))
+            chromosome = utils.get_chrom(cpath + "/chr." + str(cidx) + '.fa.gz')
+            for idx,row in dataset[cidx].iterrows():
+                pos = row['pos'] - 1
+                if row['mutated_from'] != chromosome[pos]:
+                    cver = cpath.split("/")[-1]
+                    error = "For the input mutation %s>%s at position %s in chromosome %s, the mutated_from nucleotide (%s) does not match the nucleotide in the %s reference genome (%s). Please check the input data and verify that the correct version of the reference human genome was selected in the Data Submission Form." % (row['mutated_from'], row['mutated_to'], row['pos'], row['chromosome'], row['mutated_from'], cver, chromosome[pos])
+                    #error = "Found mismatch in the mutation: chromosome %s pos %s mutated_from: %s; but expected: %s. Input mutation coordinate is probably incorrect or different genome version is probably used.\n" % (row['chromosome'],row['pos'],row['mutated_from'],chromosome[pos])
+                    break
+                seq = chromosome[pos-kmer+1:pos+kmer] + row['mutated_to'] #-5,+6
+                # for escore, just use 8?
+                escore_seq = chromosome[pos-9+1:pos+9] + row['mutated_to']
+                result.append([idx,seq,escore_seq,utils.seqtoi(seq),0,0,"None"]) #rowidx,seq,escore_seq,val,diff,t,pbmname
+            if error:
                 break
-            seq = chromosome[pos-kmer+1:pos+kmer] + row['mutated_to'] #-5,+6
-            # for escore, just use 8?
-            esccore_seq = chromosome[pos-9+1:pos+9] + row['mutated_to']
-            result.append([idx,seq,esccore_seq,utils.seqtoi(seq),0,0,"None"]) #rowidx,seq,escore_seq,val,diff,t,pbmname
-        if error:
-            break
 
     # finish parsing the file, delete it
     if filename.startswith(app.config['UPLOAD_FOLDER']):
@@ -68,13 +90,14 @@ def inittbl(self,filename,cpath):
         return error
     else:
         result = sorted(result,key=lambda result:result[0])
+        # example row in result: [73, 'CCAACCAACCCA', 'ATTCCAACCAACCCCCTA', 5263444, 0, 0, 'None']
         print("Time to preprocess: {:.2f}secs".format(time.time()-start))
         return result
 
 #==================================== Prediction Part ====================================
 
-# TODO: remove sharedlist if not needed anymore
-def predict(predlist,dataset,sharedlist,filteropt=1,filterval=1):
+def predict(predlist, dataset, ready_count,
+            filteropt=1, filterval=1, spec_ecutoff=0.4, nonspec_ecutoff=0.35):
     '''
     for the container list, key is a tuple of: (rowidx,sequence,seqidx)
     and each element in value is a list if: [diff,z-score,pbmname]
@@ -91,6 +114,7 @@ def predict(predlist,dataset,sharedlist,filteropt=1,filterval=1):
         # leave this empty as for p-value, we don't have to compare and the size is dynamic
         container = {tuple(row[:4]):[] for row in dataset}
 
+    test_total_time = 0
     # iterate for each transcription factor
     for i in range(0,len(predlist)):
         start = time.time()
@@ -108,6 +132,8 @@ def predict(predlist,dataset,sharedlist,filteropt=1,filterval=1):
             zscore = tflist[seqidx][1]
             if np.isnan(zscore):
                 zscore = 0
+            if np.isnan(diff):
+                diff = 0
             pval = scipy.stats.norm.sf(abs(zscore))*2
             add = True
             if filteropt == 1:
@@ -121,10 +147,23 @@ def predict(predlist,dataset,sharedlist,filteropt=1,filterval=1):
             # filteropt = 2, if z-score is chosen then filterval is the p-val threshold
             elif pval > filterval:
                     add = False
+            # E-score calculation is here
             if add:
-                isbound = utils.isbound_escore_18mer(row_key[2],pbmname,app.config['ESCORE_DIR'])
-                container[row_key].append([diff,zscore,pval,isbound,pbmname])
-        sharedlist.append(pbmname) # TODO: delete this?
+                if spec_ecutoff == -1 or nonspec_ecutoff == -1:
+                    container[row_key].append([diff,zscore,pval,"N/A",pbmname])
+                else:
+                    test_start = timer()
+                    # E-score calculation: 0.05 seconds each
+                    # For 10k rows, total: 141.34secs, from e-score 128.56331secs
+                    # For 50k rows, total: 771.42 secs, from e-score: 752.123secs
+                    # another example: 2547.41secs, from e-score: 2523.96897secs
+                    isbound = utils.isbound_escore_18mer(row_key[2],pbmname,app.config['ESCORE_DIR'],spec_ecutoff,nonspec_ecutoff)
+                    container[row_key].append([diff,zscore,pval,isbound,pbmname])
+                    test_end = timer()
+                    test_total_time += (test_end-test_start)
+
+        print("Total e-score time %.5f" % test_total_time)
+        ready_count.value += 1
         print("Total running time for {}: {:.2f}secs".format(pbmname,time.time()-start))
 
     # remove seqidx and 18mer as it is not needed anymore
@@ -151,7 +190,7 @@ def format2tbl(tbl,gene_names,filteropt=1):
             linemap = line.strip().split(":")
             pbmtohugo[linemap[0]] = linemap[1].split(",")
 
-    gapdata = read_gapfile(app.config['GAP_FILE'])
+    #gapdata = read_gapfile(app.config['GAP_FILE'])
 
     sorted_key = sorted(tbl.keys())
     datavalues = []
@@ -172,14 +211,15 @@ def format2tbl(tbl,gene_names,filteropt=1):
             if pbmname  == 'None':
                 rowdict['TF_gene'] = ""
                 rowdict['pbmname'] = "None"
-                rowdict['gapmodel'] = "None"
+                #rowdict['gapmodel'] = "None" # vmartin: comment for now
             else:
                 rowdict['TF_gene'] = ",".join([gene for gene in pbmtohugo[pbmname] if gene in gene_names])
                 rowdict['pbmname'] = pbmname
-                rowdict['gapmodel'] = gapdata[pbmname]
+                #rowdict['gapmodel'] = gapdata[pbmname] # vmartin: comment for now
             datavalues.append(rowdict)
 
-    colnames = ["row","wild","mutant","diff","z_score","p_value","TF_gene","binding_status","gapmodel","pbmname"]
+    #colnames = ["row","wild","mutant","diff","z_score","p_value","TF_gene","binding_status","gapmodel","pbmname"]
+    colnames = ["row","wild","mutant","diff","z_score","p_value","TF_gene","binding_status","pbmname"]
     return colnames,datavalues
 
 def postprocess(datalist,gene_names,filteropt=1,filterval=1):
@@ -208,7 +248,7 @@ def postprocess(datalist,gene_names,filteropt=1,filterval=1):
 @celery.task()
 def drop_index(task_id):
     '''
-    Make this a celery task so we can schedule it
+    Make this a celery task so we can schedule it -- done?
     '''
     print("Remove key/index for %s from redis"%task_id)
     client = redisearch.Client(task_id)
@@ -228,14 +268,15 @@ def savetoredis(req_id,colnames,datavalues,expired_time):
     client.create_index(indexes)
     for i in range(0,len(datavalues)):
         fields = {colnames[j]:datavalues[i][colnames[j]] for j in range(0,len(colnames))}
-        client.add_document(i, **fields)
+        client.add_document("%s_%d"%(req_id,i), **fields)
     # ---- set expiry for columns and documents ----
-    db.expire("%s:cols"%req_id,expired_time)
+    #db.expire("%s:cols"%req_id,expired_time) let's comment for now and see how it goes
     drop_index.apply_async((req_id,), countdown=expired_time)
 
 #https://github.com/MehmetKaplan/Redis_Table
 @celery.task(bind=True)
-def do_prediction(self,intbl,selections,gene_names,filteropt=1,filterval=1):
+def do_prediction(self, intbl, selections, gene_names,
+                  filteropt=1, filterval=1, spec_ecutoff=0.4, nonspec_ecutoff=0.35):
     '''
     intbl: preprocessed table
     filteropt: 1 for highest t-val, 2 for p-val cutoff
@@ -257,31 +298,33 @@ def do_prediction(self,intbl,selections,gene_names,filteropt=1,filterval=1):
     predfiles = [app.config['PREDDIR'] + "/" + s for s in selections] # os.listdir(preddir)
     preds = utils.chunkify(predfiles,app.config['PCOUNT']) # chunks the predfiles for each process
 
-    sharedlist = mp.Manager().list()
-    async_pools = [pool.apply_async(predict, (preds[i],intbl,sharedlist,filteropt,filterval)) for i in range(0,len(preds))]
+    # need to use manager here
+    shared_ready_sum = mp.Manager().Value('i', 0)
+
+    async_pools = [pool.apply_async(predict, (preds[i], intbl, shared_ready_sum, filteropt, filterval, spec_ecutoff, nonspec_ecutoff)) for i in range(0,len(preds))]
 
     # run the job, update progress bar
     total = len(predfiles)
     while not all([p.ready() for p in async_pools]):
-        ready_sum = len(sharedlist)
         time.sleep(2) # super important to avoid checking every loop
         self.update_state(state='PROGRESS',
-                          meta={'current': ready_sum, 'total': total, 'status': 'Processing input data...'})
+                          meta={'current': shared_ready_sum.value, 'total': total, 'status': 'Processing input data...'})
 
     res = [p.get() for p in async_pools]
     self.update_state(state='PROGRESS',
-                          meta={'current': ready_sum, 'total': total, 'status': 'post-processing'})
+                          meta={'current': shared_ready_sum.value, 'total': total, 'status': 'post-processing'})
     print("Terminate all children process..")
     pool.terminate() # terminate to kill all child processes !!! Like.. super important,
                      # to avoid memory leak, seriously...
     colnames,datavalues = postprocess(res,gene_names,filteropt,filterval)
 
     ''' SET the values in redis '''
+    #print("marktesting",colnames,datavalues)
     savetoredis(self.request.id,colnames,datavalues,app.config['USER_DATA_EXPIRY'])
     # significance_score can be z-score or p-value depending on the out_type
 
     #db.expire("%s:vals:*" % self.request.id, app.config['USER_DATA_EXPIRY'])
 
-    return {'current': len(sharedlist), 'total': len(predfiles), 'status': 'Task completed!',
+    return {'current': shared_ready_sum.value, 'total': len(predfiles), 'status': 'Task completed!',
             'result': 'done', 'taskid': self.request.id,
             'time':(time.time()-start_time)} # -- somehow cannot do jsonify(postproc)

@@ -20,11 +20,12 @@
   max-height: 200px;
   margin-bottom: 10px;
   overflow:scroll;
+  word-wrap: break-word;
   -webkit-overflow-scrolling: touch;
 }
 
 .list-group-item-custom{
-    font-size:8pt;
+    font-size:10pt;
 }
 
 .unstyled-button {
@@ -35,11 +36,6 @@
 
 .clickable-cell.dropdown-toggle::after {
     display:none;
-}
-
-.dataTables_scroll{
-  overflow:auto;
-  position:relative;
 }
 
 .bolded-red {
@@ -60,7 +56,7 @@
 .dataTables_wrapper .dataTables_processing {
   top:40%;
   z-index: 1;
-}
+} 
 
 /* Style the close button (span) */
 .close {

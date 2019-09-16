@@ -1,15 +1,17 @@
 function displayOpt(searchOpt,searchKey){
     switch(searchOpt) {
         case 'exclude':
-            return "~"+searchKey;
+            return ' <span style="color:red;">~</span>'+searchKey;
         case 'in sequence':
-            return '&#2738;'+searchKey+'&#2738;';
+            return ' <span style="color:#42a7f4;">&#x2731;</span>'+searchKey+'<span style="color:#42a7f4;">&#x2731;</span>'
         case 'at least':
-            return '&geq;'+searchKey;
+            return ' &geq;'+searchKey;
         case 'at most':
-            return '&leq;'+searchKey;
-        default:
+            return ' &leq;'+searchKey;
+        case 'or':
             return searchKey;
+        default: // exact
+            return ' <span style="color:#2b50f2;">has</span> '+searchKey;
     }
 }
 
@@ -69,11 +71,12 @@ function displayResult(status_url){
         var restbl = $('#restbl').DataTable({
             dom: 'lr<"#ressearch">tip',
             // https://stackoverflow.com/questions/17237812/datatable-jquery-table-header-width-not-aligned-with-body-width
-            //scrollX: true, -- don't use scrollX
+            //scrollX: true, -- don't use scrollX, instead use css, see: dataTables_scroll
             searching: false,
             processing: true, // Enable the display of 'processing' when the table is being processed
             serverSide: true,
             orderMulti: false,
+            autoWidth: false,
             language: {
                 processing: "<i class=\"fas fa-circle-notch fa-spin fa-5x\" style=\"color: gray;\"></i>"
             }, // $("#tableid").addClass("disabled");
@@ -91,8 +94,8 @@ function displayResult(status_url){
                 $(".cell-filter-item").click(function(){
                     searchOpt = $(this).data("filter");
                     searchKey = $(this).parent().siblings("button.cell-btn").text().trim();
-                    searchCol = $(this).data("colname")
-                    addFilterElm(searchOpt,searchKey,searchCol)
+                    searchCol = $(this).data("colname");
+                    addFilterElm(searchOpt,searchKey,searchCol);
                     restbl.ajax.reload();
                 });
             },
@@ -103,7 +106,7 @@ function displayResult(status_url){
                     d.searchFilter = JSON.stringify(searchFilter); // custom search
                 }
             },
-            columns: cols
+            columns: cols,
         });
         // this have to be outside due to the need of refering to the table
         $('#restbl').css({"width":"100%"}); // need to set this to align the header
@@ -119,18 +122,20 @@ function displayResult(status_url){
               <option>at least</option>
             </select>
           </div>
-          <div class="form-group" style="margin-right:5px;">
-            <input id="ressearch-text" class="form-control" type="text" placeholder="Enter search keyword" aria-label="Search">
+          <div class="form-group" style="margin-right:5px;" id="ressearch-field">
+                <input id="ressearch-query" class="form-control" type="text" placeholder="Enter search keyword" aria-label="Search">
           </div>
           <div class="form-group" style="margin-right:5px;">
             <select id="ressearch-select" name="ressearch-select" class="selectpicker" data-width="fit">
               <option selected>in sequence</option>
+              <option>TF genes</option>
+              <option>Binding status</option>
               <option>p-value</option>
               <option>z-score</option>
             </select>
           </div>
           <div class="form-group">
-            <button id="ressearch-btn" class="btn btn-primary btn-md" type="button">Search</button>
+            <button id="ressearch-btn" class="btn btn-primary btn-md" type="button">Filter</button>
           </div>
           `);
         $('#ressearch-select').change(function(){
@@ -140,8 +145,34 @@ function displayResult(status_url){
             }else{
                 $('#math-compare-form').css("display","none");
             }
+            if(searchOpt == 'TF genes' || searchOpt == 'Binding status'){
+                $("#ressearch-field").html(`
+                    <select id="ressearch-query" class="selectpicker" multiple data-live-search="true" data-actions-box="true"></select>
+                `);
+                var $rquery = $("#ressearch-query");
+                if(searchOpt == 'TF genes'){
+                  $("#genes-dropdown > a").each(function(){
+                      $rquery.append($('<option />').val($(this).text()).text($(this).text()));
+                  });
+                }else if(searchOpt == 'Binding status'){
+                  $rquery.append($('<option />').val("ambiguous&gt;ambiguous").text("unbound>unbound"));
+                  $rquery.append($('<option />').val("ambiguous&gt;ambiguous").text("unbound>bound"));
+                  $rquery.append($('<option />').val("ambiguous&gt;ambiguous").text("unbound>ambiguous"));
+                  $rquery.append($('<option />').val("ambiguous&gt;ambiguous").text("ambiguous>unbound"));
+                  $rquery.append($('<option />').val("ambiguous&gt;ambiguous").text("ambiguous>bound"));
+                  $rquery.append($('<option />').val("ambiguous&gt;ambiguous").text("ambiguous>ambiguous"));
+                  $rquery.append($('<option />').val("ambiguous&gt;ambiguous").text("bound>unbound"));
+                  $rquery.append($('<option />').val("ambiguous&gt;ambiguous").text("bound>bound"));
+                  $rquery.append($('<option />').val("ambiguous&gt;ambiguous").text("bound>ambiguous"));
+                }
+                $("#ressearch-query").selectpicker('refresh');
+            }else{
+                $("#ressearch-field").html(`
+                    <input id="ressearch-query" class="form-control" type="text" placeholder="Enter search keyword" aria-label="Search" />
+                `);
+            }
         });
-        $("#ressearch-text").keyup(function(event) {
+        $("#ressearch-query").keyup(function(event) {
             // Number 13 is the "Enter" key on the keyboard
             if (event.which === 13) {
                 event.preventDefault();  // Cancel the default action, if needed
@@ -151,19 +182,31 @@ function displayResult(status_url){
         });
         $("#ressearch-btn").click(function() {
              // set search field for getrestbl
-            var searchKey = $("#ressearch-text").val();
+            var searchKey = $("#ressearch-query").val();
             var selected = $("#ressearch-select option:selected").text();
             var check = true;
-            if(!searchKey){
+            if(!searchKey ||
+               (
+               (selected == "TF genes" || selected == "Binding status")
+               && $("#ressearch-query > option:selected").length==0)
+               ){
                 check = false;
             }else if(isNaN(searchKey) && (selected == 'p-value' || selected == 'z-score')){
                 check = false;
                 alert("error: search value must be numeric"); // $('#search-error').html
             }
             if(check){
-                if(selected == 'p-value' || selected == 'z-score'){
+                if(selected == "p-value" || selected == "z-score"){
                     var compare = $("#math-compare-form option:selected").text();
                     addFilterElm(compare,searchKey,selected);
+                }else if(selected == "TF genes" || selected == "Binding status"){
+                    var col = "TF_gene"
+                    if(selected == "Binding status"){
+                      col = "binding_status";
+                    }
+                    $("#ressearch-query > option:selected").each(function(){
+                        addFilterElm("or",$(this).text(),col);
+                    });
                 }else{
                     addFilterElm(selected,searchKey,"sequence");
                 }
@@ -190,18 +233,29 @@ function updateProgress(status_url,parents){
        if (data['state'] != 'PENDING' && data['state'] != 'PROGRESS') { // it's finish
            if ('result' in data) {
                //var res = data['result'];
-               $('#status').hide();
-               $(".progress").hide();
-               displayResult(status_url);
-               $('#csv-download').css('display','block').html("<a href=\"/files/" + data['taskid'] + "\" download=\"result.csv\">Download CSV</a>");
-           }
-           else if ('error' in data) {
-               // found an error
-               $('#status').html('Error: ' + data['error']);
-           }else{
-               // something unexpected happened
-               $('#status').html('Result: ' + data['state']);
-           }
+              $('#status').hide();
+              $(".progress").hide();
+              displayResult(status_url);
+              $('#tbl-download').css('display','block').html(`
+                  Download:
+                  <button type=\"button\" class=\"btn btn-link tbl-download-link \">CSV</button> /
+                  <button type=\"button\" class=\"btn btn-link tbl-download-link \">TSV</button>
+              `);
+              // Download <a href=\"/files/csv/" + data['taskid'] + "/" + filterList + "\" >CSV</a>/<a href=\"/files/tsv/" + data['taskid'] + "/" + filterList + "\">TSV</a>
+              $(".tbl-download-link").click(function() {
+                  //alert(JSON.stringify(filterList));
+                  fileType = $(this).html();
+                  filterList = JSON.stringify(getFilterList());
+                  //alert(JSON.stringify(filterList));
+                  document.location.href = "/files/" + fileType + "/" + data['taskid'] + "/" + filterList;
+              });
+          }else if ('error' in data) {
+              // found an error
+              $('#status').html('Error: ' + data['error']);
+          }else{
+              // something unexpected happened
+              $('#status').html('Result: ' + data['state']);
+          }
        }
        else {
            // rerun in 2 seconds
@@ -233,21 +287,31 @@ function getInputParam(status_url){
         /* String for desired output */
         if (data['filteropt'] == "1"){
             filterstr = "top " + data['filterval'] + " largest absolute z-score";
-        }else{
+        }else if (data['filteropt'] == "2"){
             filterstr = "p-value < " + data['filterval'];
+        }else {
+          filterstr = "-"
         }
 
         /* parse the returned list  */
         var $genesDropdown = $("#genes-dropdown");
         $.each(data['genes_selected'],function(idx,val){
-            $genesDropdown.append("<a class=\"dropdown-item\" href=\"#\">"+val+"</a>");
+            $genesDropdown.append("<a class=\"dropdown-item gene-name\">"+val+"</a>");
+        });
+        $(".gene-name").click(function(){
+            var searchOpt = "exact";
+            var searchKey = $(this).text();
+            searchCol = "TF_gene";
+            addFilterElm(searchOpt,searchKey,searchCol);
+            $('#restbl').DataTable().ajax.reload();
         });
         $('.selectpicker').selectpicker('refresh');
 
         $('#inputpanel').prepend(
             '<p><b> File input:</b><br />' + data['filename'] + '</p>' +
-            '<p><b> Desired output:</b><br />' + filterstr + '</p>' +
-            '<p><b> Genome version:</b><br />' + data['chrver'] + '</p>'
+            '<p><b> Running mode:</b><br />' + filterstr + '</p>' +
+            '<p><b> Genome version:</b><br />' + data['chrver'] + '</p>' +
+            '<p><b> E-score threshold (specific / nonspecific):</b><br />' + data['spec_escore_thres'] + ' / ' + data['nonspec_escore_thres'] + '</p>'
         )
     });
 }
